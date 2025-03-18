@@ -56,12 +56,12 @@ jobs:
       - name: Run tests
         run: pytest -v -p no:warnings
 
-  publish-testpypi:
-    name: Publish to TestPyPI
+  publish:
+    name: Build and Publish
     runs-on: ubuntu-22.04
     needs: [test]  # Only run after tests pass
     if: github.event_name == 'release' && github.event.action == 'created'  # Only on release creation
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -76,6 +76,42 @@ jobs:
           python -m pip install --upgrade pip
           pip install build setuptools wheel twine
 
+      - name: Fetch release info
+        id: release_info
+        run: |
+          echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+          echo "RELEASE_NOTES<<EOF" >> $GITHUB_ENV
+          curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/latest" | \
+            jq -r .body >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Generate release notes file
+        run: |
+          cat > RELEASE_NOTES.md << 'EOL'
+          # Release Notes
+
+          ${{ env.RELEASE_NOTES }}
+          EOL
+
+      - name: Update package description
+        run: |
+          # For pyproject.toml
+          if [ -f "pyproject.toml" ]; then
+            # Create a temporary file with README and release notes
+            cat README.md > LONG_DESCRIPTION.md
+            echo -e "\n\n## Latest Release (v${{ env.VERSION }})\n" >> LONG_DESCRIPTION.md
+            echo "${{ env.RELEASE_NOTES }}" >> LONG_DESCRIPTION.md
+            
+            # Update project configuration - method depends on your build backend
+            if grep -q "dynamic.*=.*\[.*\"readme\".*\]" pyproject.toml; then
+              # Project uses dynamic readme
+              mkdir -p .github/temp
+              cp LONG_DESCRIPTION.md .github/temp/README.md
+              sed -i 's|file = \["README.md"\]|file = [".github/temp/README.md"]|g' pyproject.toml
+            fi
+          fi
+
       - name: Build the distribution
         run: |
           python -m build
@@ -86,7 +122,7 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
-          
+
       - name: Test install from TestPyPI
         run: |
           # Create a temporary environment to test installation
